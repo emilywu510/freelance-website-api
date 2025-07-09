@@ -1,11 +1,14 @@
 package com.emily.freelance.service;
 
+import com.emily.freelance.config.RabbitConfig;
+import com.emily.freelance.entity.AnalyzeResult;
 import com.emily.freelance.entity.Translation;
 import com.emily.freelance.entity.User;
+import com.emily.freelance.repository.AnalyzeResultRepository;
 import com.emily.freelance.repository.TranslationRepository;
 import com.emily.freelance.repository.UserRepository;
 import com.emily.freelance.util.JwtUtil;
-import lombok.RequiredArgsConstructor;
+import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -20,9 +23,8 @@ import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Service
 public class TranslationService {
@@ -34,37 +36,41 @@ public class TranslationService {
     private UserRepository userRepository;
 
     @Autowired
+    private AnalyzeResultRepository jobResultRepository;
+
+    @Autowired
     private JwtUtil jwtUtil;
 
-    public Map<String, Object> countWords(String authHeader,MultipartFile file) throws IOException {
+    @Autowired
+    private AmqpTemplate rabbitTemplate;
 
+    public String submitAnalysisJob(String authHeader, MultipartFile file) throws IOException {
         String token = authHeader.replace("Bearer ", "");
         UUID userId = jwtUtil.extractUserId(token);
-
         userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found."));
 
-        String content = new String(file.getBytes());
-        // 計算英文字數
-        Pattern pattern = Pattern.compile("[a-zA-Z]+(?:['-][a-zA-Z]+)*");
-        Matcher matcher = pattern.matcher(content);
-        int englishWords = 0;
-        // 取英文字母開始到結束位置
-        while (matcher.find()) {
-            englishWords++;
-        }
-        // 只保留漢字
-        String chinese = content.replaceAll("[^\\p{IsHan}]", "");
-        int chineseChars = chinese.length();
+        String jobId = UUID.randomUUID().toString();
 
-        int wordCount = englishWords + chineseChars;
+        // 先存 PENDING狀態到 DB
+        AnalyzeResult result = new AnalyzeResult();
+        result.setJobId(jobId);
+        result.setUserId(userId);
+        result.setStatus("PENDING");
+        jobResultRepository.save(result);
 
-        double pricePerWord = 1.5;
-        double amount = wordCount * pricePerWord;
+        // 丟到 RabbitMQ
+        Map<String, Object> message = new HashMap<>();
+        message.put("fileBytes", file.getBytes());
+        message.put("userId", userId.toString());
+        message.put("jobId", jobId);
 
-        Map<String, Object> result = new HashMap<>();
-        result.put("wordCount", wordCount);
-        result.put("amount", amount);
-        return result;
+        rabbitTemplate.convertAndSend(RabbitConfig.QUEUE_NAME, message);
+
+        return jobId;
+    }
+
+    public Optional<AnalyzeResult> getAnalysisResult(String jobId) {
+        return jobResultRepository.findByJobId(jobId);
     }
 
     public String createTranslation(String authHeader, MultipartFile file,
@@ -91,7 +97,7 @@ public class TranslationService {
         Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
 
         Translation translation = new Translation();
-        translation.setSourceFileName(filename);
+        translation.setSourceFileName(file.getOriginalFilename());
         translation.setTargetLanguage(targetLanguage);
         translation.setWordCount(wordCount);
         translation.setAmount(amount);

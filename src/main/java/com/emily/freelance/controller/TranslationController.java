@@ -1,15 +1,18 @@
 package com.emily.freelance.controller;
 
+import com.emily.freelance.entity.AnalyzeResult;
 import com.emily.freelance.entity.Translation;
 import com.emily.freelance.service.TranslationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/translations")
@@ -43,12 +46,23 @@ public class TranslationController {
         return ResponseEntity.ok(translations);
     }
 
+    // 非同步分析
     @PostMapping("/analyze")
     public ResponseEntity<?> analyzeFile(
             @RequestParam("file") MultipartFile file,
-            @RequestHeader("Authorization") String authHeader
-    ) throws IOException {
-        Map<String, Object> result = translationService.countWords(authHeader,file);
-        return ResponseEntity.ok(result);
+            @RequestHeader("Authorization") String authHeader) throws IOException {
+
+        String jobId = translationService.submitAnalysisJob(authHeader, file);
+        return ResponseEntity.ok(Map.of("jobId", jobId));
+    }
+
+    @GetMapping("/analyze/result/{jobId}")
+    public ResponseEntity<?> getAnalysisResult(@PathVariable String jobId) {
+        Optional<AnalyzeResult> resultOpt = translationService.getAnalysisResult(jobId);
+        if (resultOpt.isPresent()) {
+            return ResponseEntity.ok(resultOpt.get());
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Job not found");
+        }
     }
 }
